@@ -27,7 +27,7 @@ class ECommerceDataset(Dataset):
 
         product_title = self.metadata.iloc[idx, 1]
         category = self.metadata.iloc[idx, 2]
-
+        
         if self.transform:
             image = self.transform(image)
 

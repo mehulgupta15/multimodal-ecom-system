@@ -35,7 +35,7 @@ def test_embedding_pipeline():
     )
     
     dataloader = DataLoader(dataset, batch_size=2, shuffle=False)
-    
+
     # Fetch a single batch
     # Fetch a single batch
     batch = next(iter(dataloader))
