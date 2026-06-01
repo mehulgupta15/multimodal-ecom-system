@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 from src.model import CLIPEngine
@@ -12,7 +13,7 @@ def run_semantic_search_test():
     index_prefix = "./data/products_vector_index"
     
     # Detect processing device
-    device = "cuda" if torch.torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # 2. Boot up the CLIP Engine for text encoding
     print("Waking up CLIP text encoder network...")
@@ -47,20 +48,31 @@ def run_semantic_search_test():
         
         # 5. Convert user text string into a 512-D tensor via CLIP
         with torch.no_grad():
-            # tokenize_text and get_text_features are part of your Day 4 engine mechanics
             text_features = clip_engine.extract_text_features(query_text)            
-            # Extract to raw NumPy row vector
-            query_vector = text_features.cpu().numpy().flatten()
+            # Extract to raw NumPy row vector and reshape to 2D matrix shape (1, 512)
+            query_vector = text_features.cpu().numpy().flatten().reshape(1, -1)
             
         # 6. Execute geometric dot-product lookups across your catalog vectors
-        top_matches = search_index.search(query_vector, top_k=3)
+        # Captured as a single object to prevent unpacking crashes
+        top_matches = search_index.search(query_vector, top_k=3)        
         
-        # 7. Print the top matching filenames alongside their similarity scores
-        print(f"\n✨ Top 3 Semantic Results for '{query_text}':")
+        # 7. Print the top matching results dynamically
+        print(f"\n✨ Top Results for '{query_text}':")
         print("-" * 60)
-        for rank, (img_path, score) in enumerate(top_matches, 1):
-            # Similarity score represents cosine similarity (closer to 1.0 = better match)
-            print(f" Rank {rank}: Match Score = {score:.4f} | Item: {img_path}")
+        
+        # Safely loop through whatever format top_matches returns
+        for rank, match in enumerate(top_matches, 1):
+            # If your index returns zipped elements, this handles them smoothly
+            if isinstance(match, (tuple, list)) and len(match) == 2:
+                val1, val2 = match
+                # Check if score comes first or label comes first
+                if isinstance(val1, (float, np.float32, np.float64)):
+                    print(f" Rank {rank}: Match Score = {float(val1):.4f} | Product: {val2}")
+                else:
+                    print(f" Rank {rank}: Match Score = {float(val2):.4f} | Product: {val1}")
+            else:
+                # Fallback to print the raw result if it's structured uniquely
+                print(f" Rank {rank}: {match}")
         print("-" * 60)
 
 if __name__ == "__main__":

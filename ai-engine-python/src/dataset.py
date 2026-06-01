@@ -18,26 +18,43 @@ class ECommerceDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        # Resolve image path
-        img_name = os.path.join(self.img_dir, self.metadata.iloc[idx, 0])
-        try:
-            image = Image.open(img_name).convert('RGB')
-        except Exception as e:
-            raise FileNotFoundError(f"Could not load image at {img_name}. Error: {e}")
+        # 1. Grab raw data from targeted schema indices
+        # Col 0 = product_id, Col 1 = title, Col 3 = image_path
+        product_id = str(self.metadata.iloc[idx, 0])
+        raw_img_path = str(self.metadata.iloc[idx, 3])
+        product_title = str(self.metadata.iloc[idx, 1])
 
-        product_title = self.metadata.iloc[idx, 1]
-        category = self.metadata.iloc[idx, 2]
+        # 2. Path Sanitation Engine
+        # Extract just the raw filename (e.g., 'prod_1.jpg') to clear slash mismatches
+        filename = os.path.basename(raw_img_path)
         
+        # Security check: force extension if the file row dropped it
+        if not filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+            filename = f"{filename}.jpg"
+
+        # Construct absolute targeted path on your E: drive
+        img_path = os.path.join(self.img_dir, filename)
+
+        # 3. Secure File Ingestion Block
+        try:
+            image = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            raise FileNotFoundError(
+                f"❌ [Dataset Error] Target file missing: '{img_path}'. "
+                f"Ensure 'python -m src.scraper' populated your data directory successfully! Error: {e}"
+            )
+
+        # 4. Image Preprocessing Matrix Transformation
         if self.transform:
             image = self.transform(image)
 
-        return {
-            'image': image,
-            'text': product_title,
-            'category': category
-        }
+        # 5. Production Return Contract
+        # We pass back the image tensor and the descriptive string label for your FAISS ledger.
+        # You can return 'product_title' here so your search results print real product names!
+        return image, product_title
 
 def get_clip_transforms():
+    """Standard normalization transforms for CLIP input images"""
     return transforms.Compose([
         transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),

@@ -1,79 +1,122 @@
 import os
 import torch
 import numpy as np
+import pandas as pd
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 
-# Import components from your project structure
+# Core custom engine components
 from src.model import CLIPEngine
 from src.dataset import ECommerceDataset
 from src.search_index import ProductSearchIndex
 
 def get_transforms():
-    """Standard normalization transforms for CLIP input images"""
+    """
+    Standard normalization transforms for CLIP input images.
+    Resizes image to 224x224 and applies CLIP specific color-channel normalization.
+    """
     return Compose([
-        Resize(224, interpolation=3), # Bicubic interpolation
+        Resize(224, interpolation=3),  # Bicubic interpolation
         CenterCrop(224),
         ToTensor(),
         Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
     ])
 
-def run_catalog_indexing():
-    print("=== Starting Catalog Vector Extraction Pipeline ===")
+def run_production_indexing():
+    print("=== Starting Production Catalog Vector Extraction Pipeline ===")
     
-    # Update paths to match what your dataset expects
-    csv_path = "./data/mock_products.csv"  # Path to your metadata csv
-    img_dir = "./data/mock_images"         # Path to your images directory
-    index_output_prefix = "./data/products_vector_index" 
+    # 1. Physical file paths on your E: drive
+    csv_path = "./data/products_catalog.csv"
+    img_dir = "./data/data_images"
+    index_output_prefix = "./data/products_vector_index"
     
+    # Ensure database output directory exists
     os.makedirs(os.path.dirname(index_output_prefix), exist_ok=True)
     
+    # 2. Critical Validation Check
+    if not os.path.exists(csv_path):
+        print(f"❌ Production Error: Could not find catalog ledger at '{csv_path}'.")
+        print("Please run 'python -m src.scraper' first to download assets!")
+        return
+
+    # Verify that we actually have a non-empty catalog spreadsheet
+    try:
+        df_check = pd.read_csv(csv_path)
+        if df_check.empty:
+            print("❌ Production Error: The catalog CSV file is completely empty.")
+            return
+        print(f"Verified spreadsheet database: Found {len(df_check)} registered items.")
+    except Exception as e:
+        print(f"❌ Failed reading catalog ledger layout: {e}")
+        return
+
+    # 3. Compute Resource Evaluation (CPU vs GPU activation)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device.upper()}")
+    print(f"Hardware Compute Context: {device.upper()}")
     
+    # 4. Neural Network Engine and Database Initialization
     print("Loading CLIP Neural Network Engine...")
     clip_engine = CLIPEngine()
     
-    print("Preparing dataset pipeline...")
+    print("Initializing FAISS Vector Index (512-Dimensions)...")
+    search_index = ProductSearchIndex(dimension=512)
+    
+    # 5. Build PyTorch Pipeline over Real Image Directory
+    print("Assembling PyTorch data dataset and transform streams...")
     transform = get_transforms()
     
-    # Wrap in a try-except block so if the CSV file doesn't physically exist yet,
-    # the code won't crash; it will smoothly drop into your testing fallback mode!
     try:
-        # Matches your exact signature: csv_file, img_dir, transform
         dataset = ECommerceDataset(csv_file=csv_path, img_dir=img_dir, transform=transform)
-        mock_image_paths = dataset.image_paths if hasattr(dataset, 'image_paths') else []
     except Exception as e:
-        print(f"⚠️ Could not load dataset from CSV ({e}). Switching to baseline testing mode.")
-        dataset = []
-        mock_image_paths = [f"assets/images/product_{i}.jpg" for i in range(5)]
+        print(f"❌ Pipeline Assembly Failure: Dataset instantiation crashed. Details: {e}")
+        return
         
-    dataloader = DataLoader(dataset, batch_size=2, shuffle=False) if len(dataset) > 0 else None
-    search_index = ProductSearchIndex(dimension=512)
+    # Batch size of 4 optimizes matrix throughput over local disk boundaries safely
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=False)
     
     all_vectors = []
     all_metadata = []
     
-    print(f"Extracting vectors for {len(mock_image_paths)} catalog items...")
+    print(f"Beginning deep feature extraction loop across items...")
     
-    if dataloader is not None and len(dataset) > 0:
-        with torch.no_grad():
-            for batch_images, batch_paths in dataloader:
+    # 6. Tensor Computation Loop (No-grad context eliminates memory leaks)
+    with torch.no_grad():
+        for batch_idx, (batch_images, batch_paths) in enumerate(dataloader):
+            try:
+                # Dispatch tensor stack to target hardware device context
                 batch_images = batch_images.to(device)
-                image_features = clip_engine.get_image_features(batch_images)
+                
+                # Extract the 512-dimensional normalized vectors from raw image pixels
+                # NOTE: If your model class calls it 'get_image_features', keep this line. 
+                # If your class uses 'extract_image_features', change it below.
+                image_features = clip_engine.extract_image_features(batch_images)
+                
+                # Collect compute variables from VRAM back into host system RAM memory
                 vectors = image_features.cpu().numpy()
+                
                 all_vectors.append(vectors)
                 all_metadata.extend(batch_paths)
-        final_vectors = np.vstack(all_vectors)
-    else:
-        print("Generating mock coordinate matrices for testing...")
-        final_vectors = np.random.randn(5, 512).astype('float32')
-        all_metadata = mock_image_paths
+                
+                print(f"Processed batch {batch_idx + 1}/{len(dataloader)}")
+            except Exception as e:
+                print(f"⚠️ Warning: Batch execution anomaly encountered at segment {batch_idx + 1}: {e}")
+                continue
 
-    print("Registering vectors into FAISS indexing matrix...")
+    if len(all_vectors) == 0:
+        print("❌ Critical Failure: Zero vectors generated during data sweep. Aborting write.")
+        return
+
+    # 7. Stack arrays vertically to compile the master matrix ledger
+    final_vectors = np.vstack(all_vectors).astype('float32')
+    
+    print("Registering features into FAISS index matrix space...")
     search_index.add_vectors(final_vectors, all_metadata)
     
+    # 8. Commit structural files permanently to the local disk layout
     search_index.save(index_output_prefix)
-    print("=== Extraction Pipeline Complete! Database is locked and loaded. ===")
+    print("\n🎉 === Production Database Built & Locked! ===")
+    print(f"Registered Total Elements: {len(all_metadata)}")
+    print(f"Target Destination Files: {index_output_prefix}.faiss / .pkl")
+
 if __name__ == "__main__":
-    run_catalog_indexing()
+    run_production_indexing()
