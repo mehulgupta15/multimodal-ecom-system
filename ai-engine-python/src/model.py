@@ -72,3 +72,4 @@ class CLIPEngine(nn.Module):
             # 3. Safely apply L2 normalization
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         return text_features
+
