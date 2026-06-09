@@ -1,13 +1,16 @@
 import os
 import time
+import io
+import pickle
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Query, File, UploadFile, Form
 import faiss
 import torch
 from transformers import CLIPProcessor, CLIPModel
-import pickle  # Or json, depending on how you stored your ID mappings
+from PIL import Image
 
-# Global state dictionary to clean up references if needed
+# Global state dictionary for memory allocations
 ml_models = {}
 
 @asynccontextmanager
@@ -30,13 +33,10 @@ async def lifespan(app: FastAPI):
         print(f"Error loading CLIP: {e}")
         raise e
 
-    # 2. Dynamically locate the absolute path to your data directory
-    # Grabs the folder where api.py lives (src/) and steps up one level to project root
     # 2. Locate the absolute path to your data directory relative to this file
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(current_dir)
     
-    # MATCHING YOUR EXACT VISUAL FILE SYSTEM NAMES:
     index_path = os.path.join(project_root, "data", "products_vector_index.faiss")
     metadata_path = os.path.join(project_root, "data", "products_vector_index_metadata.pkl")
     
@@ -61,7 +61,6 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # Clean up on shutdown
     print("====== [SHUTDOWN] Clearing engine allocations ======")
     ml_models.clear()
 
@@ -83,8 +82,7 @@ def read_root():
 @app.get("/search")
 async def search(query: str = Query(..., min_length=1, description="Text query to search for products")):
     """
-    Takes an HTTP string query, generates a text vector via CLIP, 
-    and searches the pre-loaded FAISS index for nearest neighbors.
+    Legacy/Alternative GET endpoint for text-only search queries.
     """
     if "model" not in ml_models or "index" not in ml_models:
         raise HTTPException(status_code=503, detail="Search engine models are not fully initialized.")
@@ -96,58 +94,136 @@ async def search(query: str = Query(..., min_length=1, description="Text query t
         index = ml_models["index"]
         product_ids = ml_models["product_ids"]
 
-        # 1. Benchmark vector generation step
         start_inference = time.time()
         
-        inputs = processor(text=[query], return_tensors="pt", padding=True)
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        inputs = processor(text=[query], return_tensors="pt", padding=True).to(device)
         
         with torch.no_grad():
-            # 1. Compute CLIP features
             outputs = model.get_text_features(**inputs)
-            
-            # 2. Extract raw PyTorch tensor regardless of the wrapper layer type
-            if hasattr(outputs, "text_embeds"):
-                text_features = outputs.text_embeds
-            elif isinstance(outputs, dict) and "text_embeds" in outputs:
-                text_features = outputs["text_embeds"]
-            elif hasattr(outputs, "last_hidden_state"):
-                # Fallback if text features pooling isn't explicitly detached
-                text_features = outputs.last_hidden_state[:, 0, :]
-            else:
-                text_features = outputs
+            if len(outputs.shape) == 1:
+                outputs = outputs.unsqueeze(0)
+            outputs = outputs / outputs.norm(dim=-1, keepdim=True)
+            query_vector = outputs.cpu().numpy().astype("float32")
 
-            # 3. Perform Vector Math & Data Type Normalization
-            # Ensure it is a 2D tensor for FAISS compatibility [1, 512]
-            if len(text_features.shape) == 1:
-                text_features = text_features.unsqueeze(0)
-                
-            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-            query_vector = text_features.cpu().numpy().astype("float32")
-
-        # 2. Query FAISS index (Retrieve top 5 closest items)
         k = 5
         distances, indices = index.search(query_vector, k)
         inference_time_ms = (time.time() - start_inference) * 1000
 
-        # 3. Construct structured JSON response payload
         results = []
         for rank, (distance, idx) in enumerate(zip(distances[0], indices[0])):
             if idx == -1:
-                continue  # FAISS returns -1 if fewer items exist than requested k
-                
-            # Resolve actual database ID if tracking dictionary is present
+                continue
             resolved_id = product_ids[idx] if product_ids is not None else int(idx)
+            results.append({
+                "rank": rank + 1,
+                "product_id": resolved_id,
+                "similarity_score": float(distance)
+            })
+
+        return {
+            "meta": {"query": query, "execution_time_ms": round(inference_time_ms, 2), "results_count": len(results)},
+            "results": results
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal Search Engine Exception: {str(e)}")
+
+
+@app.post("/search")
+async def search_products(
+    text_query: Optional[str] = Form(None, description="Text string query to search for products"),
+    image_file: Optional[UploadFile] = File(None, description="Binary image file upload to search for products"),
+    k: int = 5
+):
+    """
+    Unified Multimodal Search Endpoint. Accepts EITHER a text string form field 
+    OR a binary image file upload, routing them to their respective CLIP towers.
+    """
+    if "model" not in ml_models or "index" not in ml_models:
+        raise HTTPException(status_code=503, detail="Search engine models are not fully initialized.")
+        
+    # Robust Check: Ensure a file was actually uploaded and isn't just an empty form field
+    is_image_present = image_file is not None and image_file.filename != ""
+    
+    if not text_query and not is_image_present:
+        raise HTTPException(
+            status_code=400, 
+            detail="Validation Error: You must provide either a valid 'text_query' or an 'image_file'."
+        )
+    
+    try:
+        model = ml_models["model"]
+        processor = ml_models["processor"]
+        device = ml_models["device"]
+        index = ml_models["index"]
+        product_ids = ml_models["product_ids"]
+
+        start_inference = time.time()
+        
+        # --- VISION BRANCH ---
+        if is_image_present:
+            print(f"Executing Image Search Pipeline for file: {image_file.filename}")
+            image_bytes = await image_file.read()
+            pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            
+            inputs = processor(images=pil_image, return_tensors="pt").to(device)
+            
+            with torch.no_grad():
+                # Direct vision model tower execution
+                vision_outputs = model.vision_model(**inputs)
+                # Raw visual embeddings pooler extraction
+                features = vision_outputs[1] if isinstance(vision_outputs, tuple) else vision_outputs.pooler_output
+                # Project features to the shared multimodal embedding dimension
+                features = model.visual_projection(features)
+                
+        # --- TEXT BRANCH ---
+        else:
+            print(f"Executing Text Search Pipeline for query: '{text_query}'")
+            inputs = processor(text=[text_query], return_tensors="pt", padding=True).to(device)
+            
+            with torch.no_grad():
+                # Direct text model tower execution
+                text_outputs = model.text_model(**inputs)
+                # Raw text embeddings pooler extraction
+                features = text_outputs[1] if isinstance(text_outputs, tuple) else text_outputs.pooler_output
+                # Project features to the shared multimodal embedding dimension
+                features = model.text_projection(features)
+
+        # Global Safety Step: Ensure we have a raw, naked PyTorch Tensor
+        if hasattr(features, "detach"):
+            features = features.detach()
+
+        # Ensure embedding shape is exactly 2D [1, 512] for FAISS
+        if len(features.shape) == 1:
+            features = features.unsqueeze(0)
+            
+        # Normalize features vector using L2 norm (Required for True Cosine Similarity)
+        features = features / features.norm(p=2, dim=-1, keepdim=True)
+        query_np = features.cpu().numpy().astype('float32')
+        
+        # Execute Vector search against FAISS index
+        distances, indices = index.search(query_np, k)
+        inference_time_ms = (time.time() - start_inference) * 1000
+        
+        # Format and resolve results
+        results = []
+        for rank, (distance, idx) in enumerate(zip(distances[0], indices[0])):
+            if idx == -1:
+                continue
+            
+            if product_ids is not None and idx < len(product_ids):
+                resolved_id = product_ids[idx]
+            else:
+                resolved_id = int(idx)
             
             results.append({
                 "rank": rank + 1,
                 "product_id": resolved_id,
-                "similarity_score": float(distance)  # cast from numpy float to native float
+                "similarity_score": round(float(distance), 5)
             })
-
+                
         return {
             "meta": {
-                "query": query,
+                "search_type": "image" if is_image_present else "text",
                 "execution_time_ms": round(inference_time_ms, 2),
                 "results_count": len(results)
             },
@@ -155,4 +231,4 @@ async def search(query: str = Query(..., min_length=1, description="Text query t
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Search Engine Exception: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Multimodal Engine Execution Failed: {str(e)}")
