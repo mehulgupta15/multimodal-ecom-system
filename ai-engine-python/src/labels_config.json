@@ -1,0 +1,32 @@
+{
+  "categories": [
+    "Apparel",
+    "Footwear",
+    "Electronics",
+    "Home Decor",
+    "Accessories"
+  ],
+  "attributes": {
+    "colors": [
+      "Crimson Red", 
+      "Navy Blue", 
+      "Emerald Green", 
+      "Classic Black", 
+      "Pure White"
+    ],
+    "materials": [
+      "Combed Cotton", 
+      "Genuine Leather", 
+      "Stainless Steel", 
+      "Synthetic Mesh", 
+      "Polyester Blend"
+    ],
+    "styles": [
+      "Casual Sportswear", 
+      "Formal Elegant", 
+      "Minimalist Modern", 
+      "Vintage Retro", 
+      "Industrial Utility"
+    ]
+  }
+}

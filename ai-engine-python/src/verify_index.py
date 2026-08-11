@@ -19,7 +19,7 @@ def inspect_database():
     print(f"Total Entries in Metadata Ledger: {len(metadata)}")
     
     if total_vectors < 2:
-        print("❌ Error: Not enough vectors to build a variation space.")
+        print("[ERROR] Not enough vectors to build a variation space.")
         return
 
     # Reconstruct the first two vectors from FAISS to check for duplicates
@@ -32,12 +32,12 @@ def inspect_database():
         print(f"Cosine match between item 0 and item 1: {similarity:.4f}")
         
         if similarity > 0.999:
-            print("⚠️ WARNING: Your saved vectors are identical duplicates! Your generation pipeline is feeding frozen data layers.")
+            print("[WARNING] Your saved vectors are identical duplicates! Your generation pipeline is feeding frozen data layers.")
         else:
-            print("✅ Vectors are distinct. The problem is a state tracking mismatch in api.py.")
+            print("[SUCCESS] Vectors are distinct and valid.")
             
     except Exception as e:
-        print(f"Could not reconstruct vectors (Index might be optimized/compressed): {e}")
+        print(f"Could not reconstruct vectors: {e}")
 
 if __name__ == "__main__":
     inspect_database()

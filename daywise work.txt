@@ -1,0 +1,120 @@
+Phase 1: Vector Search & Core Backend (Days 5–10)
+Focus: Turning your 512-D embeddings into an instant, searchable index and wrapping it in a programmatic interface.
+
+Day 5: Build the Vector Search Index (src/index_engine.py)
+
+Task: Install FAISS (pip install faiss-cpu). Write a wrapper class to initialize an L2-normalized inner-product index (faiss.IndexFlatIP) matching your 512-dimensional output.
+
+Day 6: Catalog Encoding Pipeline (scripts/encode_catalog.py)
+
+Task: Write a script that iterates through your entire product dataset, generates 512-D image embeddings using your Day 4 engine, saves them into the FAISS index, and saves an ID mapping dictionary.
+
+Day 7: The Query Processing Engine & Similarity Matching
+
+Task: Implement a text-to-image search function. It accepts a search string, extracts its text vector, runs index.search(), and extracts the top K closest product matches.
+
+Day 8: Build the Backend API Structure (Python Fast API)
+
+Task: Set up an API using FastAPI (pip install fastapi uvicorn). Build the boilerplate app structure and create the startup events to load your CLIP model and FAISS index into memory once.
+
+Day 9: Develop Search Endpoints (/search)
+
+Task: Create a POST endpoint that takes a text query or an image file input and returns a structured JSON payload containing the matching product IDs, titles, and similarity scores.
+
+Day 10: API Integration & Stress Testing
+
+Task: Write a validation script using Python's requests library to bombard your local endpoints with diverse queries, verifying shape consistency and error handling under stress.
+
+Phase 2: Autonomous E-Commerce Tagging (Days 11–15)
+Focus: Implementing the zero-shot classification system to auto-tag products with metadata (categories, colors, styles) without training labels.
+
+Day 11: Candidate Label Architecture Setup
+
+Task: Define structured, hierarchical label trees in a configuration file (e.g., Categories: Apparel, Footwear, Electronics; Attributes: Red, Blue, Cotton, Leather).
+
+Day 12: Zero-Shot Tagging Logic
+
+Task: Build a function that feeds these candidate labels through your text encoder, calculates similarity matrices against incoming product images, and auto-assigns the highest-scoring label.
+
+Day 13: Bulk Tagging Automation Script
+
+Task: Create an automated offline pipeline script that takes untagged raw products, processes them, updates your metadata.csv with the newly assigned tags, and logs the execution.
+
+Day 14: Tag Validation & Accuracy Metrics
+
+Task: Manually audit a slice of your auto-tagged catalog. Calculate precision and recall metrics for your zero-shot classifier to evaluate its accuracy for your future research paper data tables.
+
+Day 15: Database Schema & Tag Storage Upgrades
+
+Task: Restructure your database format (or CSV tracking matrix) to accommodate the new multi-value tags seamlessly alongside the original indexing vectors.
+
+Phase 3: Web Scraping & Advanced Optimization (Days 16–20)
+Focus: Moving beyond mock testing by scraping a live e-commerce catalog, scaling up your data pipeline, and optimization.
+
+Day 16: E-Commerce Web Scraping Pipeline (scripts/scraper.py) 🌟 [ADDED]
+
+Task: Write an automated pipeline using BeautifulSoup and requests to target a live e-commerce store catalog. Extract product names, descriptions, and download their source images straight into your E: drive to replace your mock data with a massive, real-world catalog.
+
+Day 17: Multi-GPU Acceleration & Batch Tuning
+
+Task: Profile your script execution times using your freshly scraped real data. Adjust your PyTorch DataLoader parameters (num_workers, pin_memory) and optimize batch processing matrices to max out hardware efficiency.
+
+Day 18: Quantization & Speed Optimization
+
+Task: Implement Float16 (FP16) mixed-precision inference for your CLIP engine. Benchmark the processing speed increase and vector space fidelity preservation.
+
+Day 19: Hybrid Retrieval Logic Implementation
+
+Task: Combine classical text search (keyword BM25 processing) with your neural vector search to form a balanced, high-accuracy hybrid e-commerce search algorithm.
+
+Day 20: Comprehensive System Performance Benchmarking
+
+Task: Track execution latencies (milliseconds per search) and memory utilization profiles across varying catalog size scales, storing these logs for your academic data visualizations.
+
+Phase 4: Frontend Application Construction (Days 21–25)
+Focus: Giving your technical backend a visual interface so users can experience semantic text search and image-to-image upload search.
+
+Day 21: Streamlit Frontend Infrastructure Setup
+
+Task: Install Streamlit (pip install streamlit). Create a dashboard page framework complete with sidebars, search entry fields, and clean image grid placeholders.
+
+Day 22: Connecting UI Components to Frontend Controls
+
+Task: Wire the UI search input fields directly to your FastAPI endpoints using asynchronous HTTP requests, validating that text typed into the UI returns the correct backend data.
+
+Day 23: Image Upload & Visual Search UI
+
+Task: Build a drag-and-drop file upload button in Streamlit. Allow users to upload a raw picture from their phone/computer, send it to the API, and display visually similar store items instantly.
+
+Day 24: Interface Polish & Metadata Display
+
+Task: Add visual cards to display the product titles, auto-generated semantic tags, and matching confidence percentages right below the image results in a clean layout.
+
+Day 25: End-to-End System Smoke Testing
+
+Task: Launch your data loader, backend server, and Streamlit application concurrently. Verify that the entire system functions smoothly as a unified, production-ready product.
+
+Phase 5: Academic Research Paper Production (Days 26–30)
+Focus: Translating your engineering project into a rigorous, technically advanced, publication-ready research paper.
+
+Day 26: Section 1 & 2 — Abstract, Introduction & Literature Review
+
+Task: Draft the core problem statement (the limitations of traditional keyword search). Detail the historical shift from bag-of-words algorithms to multimodal vector spaces, citing OpenAI's CLIP foundation papers.
+
+Day 27: Section 3 — System Architecture & Methodology
+
+Task: Document your exact system workflow. Draft technical descriptions explaining why you used custom PyTorch dataloaders, zero-shot classification routines, your Day 16 web scraping data collection choice, and FAISS vector indexes.
+
+Day 28: Section 4 — Experimental Results, Tables & Performance Metrics
+
+Task: Build clear data tables showcasing your system benchmarks. Plot graphs tracking search response latencies vs. catalog data size scales and item retrieval precision rates.
+
+Day 29: Section 5 — Discussion, Future Work & Conclusion
+
+Task: Analyze current system limitations (e.g., handling fine-grained textual modifications like text orientation on clothing) and outline future research opportunities such as moving to fine-tuned vision-language models.
+
+Day 30: Final Paper Formatting, Code Cleanup & Final Push
+
+Task: Format the paper into a clean, professional PDF layout (like the standard IEEE or ACM templates). Run a full linting pass on your Python codebase, finalize your project's GitHub README document, and push your absolute final codebase update to your repository!
+
+This locks down the perfect sequence. Since we are exactly on track, are you ready to kick off Day 5 and implement your FAISS vector search index wrapper?

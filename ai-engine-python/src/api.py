@@ -8,7 +8,6 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import time
 import io
-import pickle
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -17,6 +16,7 @@ import faiss
 import torch
 from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
+import pandas as pd
 
 # Global state dictionary for memory allocations
 ml_models = {}
@@ -31,32 +31,27 @@ async def gpu_batch_processor():
     and processes them as a single batched array on the GPU to maximize throughput.
     """
     while True:
-        # 1. Block until at least one request enters the queue
         first_request = await text_request_queue.get()
         batch = [first_request]
         
-        # 🔥 Give the concurrent flood exactly 20ms to stack up inside the queue buffer
         await asyncio.sleep(0.02)
 
-        # 2. Snatch any other requests that arrived in this window (Up to batch size 32)
         while text_request_queue.qsize() > 0 and len(batch) < 32:
             batch.append(text_request_queue.get_nowait())
             
-        # Extract individual text targets and their respective completion hooks (Futures)
         queries = [item["query"] for item in batch]
         futures = [item["future"] for item in batch]
-        target_k = batch[0]["k"]  # Take the requested k-depth context
+        target_k = batch[0]["k"]
         
         try:
             model = ml_models["model"]
             processor = ml_models["processor"]
             device = ml_models["device"]
             index = ml_models["index"]
-            product_ids = ml_models["product_ids"]
+            product_lookup = ml_models["product_lookup"]
             
             start_inference = time.time()
             
-            # Tokenize and execute the entire text batch on the GPU at once!
             inputs = processor(text=queries, return_tensors="pt", padding=True, truncation=True, max_length=77).to(device)
             
             with torch.no_grad():
@@ -67,14 +62,12 @@ async def gpu_batch_processor():
             if hasattr(features, "detach"):
                 features = features.detach()
 
-            # Normalize the batch arrays using L2 Norm for vector metrics
             features = features / features.norm(p=2, dim=-1, keepdim=True)
             queries_np = features.cpu().numpy().astype('float32')
             
             total_inference_time_ms = (time.time() - start_inference) * 1000
             per_query_time = round(total_inference_time_ms / len(batch), 2)
             
-            # 3. Slice the matrix output and perform fast parallel lookups across FAISS index
             for i, future in enumerate(futures):
                 if future.done():
                     continue
@@ -87,18 +80,23 @@ async def gpu_batch_processor():
                     if idx == -1:
                         continue
                     
-                    if product_ids is not None and idx < len(product_ids):
-                        resolved_id = product_ids[idx]
+                    resolved = product_lookup.get(int(idx), {"product_id": f"prod_{idx}", "title": f"Product Index {idx}", "tags": {}})
+                    if isinstance(resolved, dict):
+                        results.append({
+                            "rank": rank + 1,
+                            "product_id": resolved.get("product_id"),
+                            "title": resolved.get("title"),
+                            "category": resolved.get("category"),
+                            "tags": resolved.get("tags"),
+                            "similarity_score": round(float(distance), 5)
+                        })
                     else:
-                        resolved_id = int(idx)
-                    
-                    results.append({
-                        "rank": rank + 1,
-                        "product_id": resolved_id,
-                        "similarity_score": round(float(distance), 5)
-                    })
+                        results.append({
+                            "rank": rank + 1,
+                            "product_id": resolved,
+                            "similarity_score": round(float(distance), 5)
+                        })
                 
-                # Hand result directly back to the unique connection thread
                 future.set_result({
                     "meta": {
                         "search_type": "text",
@@ -111,29 +109,21 @@ async def gpu_batch_processor():
                 })
                 
         except Exception as e:
-            # Route processing failures gracefully back to individual open requests
             for future in futures:
                 if not future.done():
                     future.set_exception(e)
         finally:
-            # Clear loop task counters
             for _ in range(len(batch)):
                 text_request_queue.task_done()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Handles application startup and shutdown lifecycle events.
-    Loads heavy models and indices into memory once using absolute paths.
-    """
     print("====== [STARTUP] Initializing Search Engine Infrastructure ======")
     start_time = time.time()
     
-    # 1. Load CLIP Model and Processor onto CUDA GPU Acceleration Layer
     try:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Loading CLIP model onto device: {device}...")
         ml_models["model"] = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
         ml_models["processor"] = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
         ml_models["device"] = device
@@ -141,46 +131,77 @@ async def lifespan(app: FastAPI):
         print(f"Error loading CLIP: {e}")
         raise e
 
-    # 2. Locate the absolute path to your data directory relative to this file
+    # Force absolute paths relative to execution roots to fix path splitting issues
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(current_dir)
     
     index_path = os.path.join(project_root, "data", "products_vector_index.faiss")
-    metadata_path = os.path.join(project_root, "data", "products_vector_index_metadata.pkl")
+    csv_path = os.path.join(project_root, "data", "products_catalog.csv")
     
-    print(f"Targeting FAISS index at absolute path: {index_path}")
     if not os.path.exists(index_path):
         raise FileNotFoundError(f"FAISS index file missing at: {index_path}")
     
-    print("Loading FAISS index into memory...")
+    print("Loading FAISS Index...")
     ml_models["index"] = faiss.read_index(index_path)
 
-    # 3. Load product lookup metadata
-    if os.path.exists(metadata_path):
-        print(f"Loading product lookup metadata from: {metadata_path}")
-        with open(metadata_path, "rb") as f:
-            ml_models["product_ids"] = pickle.load(f)
-    else:
-        print(f"[WARNING] Metadata file missing at {metadata_path}. Metrics will use fallback indices.")
-        ml_models["product_ids"] = None
+    # Dictionary Map with Strict Fallback and Rich Metadata (Tags)
+    product_lookup = {}
+    if os.path.exists(csv_path):
+        print(f"Reading Database strings directly from Ledger: {csv_path}")
+        df = pd.read_csv(csv_path)
+        
+        for idx, row in df.iterrows():
+            id_val = str(row['product_id']).strip() if 'product_id' in df.columns and pd.notna(row['product_id']) else str(idx)
+            title_val = str(row['title']).strip() if 'title' in df.columns and pd.notna(row['title']) else f"Product {id_val}"
+            img_val = str(row['image_path']).strip() if 'image_path' in df.columns and pd.notna(row['image_path']) else ""
+            cat_val = str(row['category']).strip() if 'category' in df.columns and pd.notna(row['category']) else ""
+            pred_cat = str(row['predicted_category']).strip() if 'predicted_category' in df.columns and pd.notna(row['predicted_category']) else ""
+            color_val = str(row['color']).strip() if 'color' in df.columns and pd.notna(row['color']) else ""
+            mat_val = str(row['material']).strip() if 'material' in df.columns and pd.notna(row['material']) else ""
+            style_val = str(row['style']).strip() if 'style' in df.columns and pd.notna(row['style']) else ""
 
-    # SPIN UP BACKGROUND PROCESSING TASK BEFORE YIELD
-    print("Launching Background GPU Multi-Request Batching Loop Engine...")
+            product_lookup[int(idx)] = {
+                "product_id": id_val,
+                "title": title_val,
+                "image_path": img_val,
+                "category": cat_val,
+                "tags": {
+                    "category": pred_cat,
+                    "color": color_val,
+                    "material": mat_val,
+                    "style": style_val
+                }
+            }
+        
+        ml_models["product_lookup"] = product_lookup
+    else:
+        print(f"[WARNING] Catalog CSV ledger not found at {csv_path}.")
+        ml_models["product_lookup"] = {}
+
+    print("Launching Background GPU Worker...")
     asyncio.create_task(gpu_batch_processor())
 
     elapsed = time.time() - start_time
-    print(f"====== [STARTUP] Engine ready. Infrastructure loaded in {elapsed:.2f}s ======")
+    print(f"====== [STARTUP] Engine ready. Loaded in {elapsed:.2f}s ======")
     
     yield
-    
     print("====== [SHUTDOWN] Clearing engine allocations ======")
     ml_models.clear()
 
 
-# Initialize FastAPI app with the lifespan manager
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="Autonomous E-Commerce Semantic Search Engine",
     version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.router.lifespan_context = lifespan
@@ -188,56 +209,7 @@ app.router.lifespan_context = lifespan
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "engine": "Multimodal CLIP + FAISS [CUDA Accelerated Enabled]"}
-
-
-@app.get("/search")
-async def search(query: str = Query(..., min_length=1, description="Text query to search for products")):
-    """
-    Legacy/Alternative GET endpoint for text-only search queries.
-    """
-    if "model" not in ml_models or "index" not in ml_models:
-        raise HTTPException(status_code=503, detail="Search engine models are not fully initialized.")
-
-    try:
-        model = ml_models["model"]
-        processor = ml_models["processor"]
-        device = ml_models["device"]
-        index = ml_models["index"]
-        product_ids = ml_models["product_ids"]
-
-        start_inference = time.time()
-        
-        inputs = processor(text=[query], return_tensors="pt", padding=True, truncation=True, max_length=77).to(device)
-        
-        with torch.no_grad():
-            outputs = model.get_text_features(**inputs)
-            if len(outputs.shape) == 1:
-                outputs = outputs.unsqueeze(0)
-            outputs = outputs / outputs.norm(dim=-1, keepdim=True)
-            query_vector = outputs.cpu().numpy().astype("float32")
-
-        k = 5
-        distances, indices = index.search(query_vector, k)
-        inference_time_ms = (time.time() - start_inference) * 1000
-
-        results = []
-        for rank, (distance, idx) in enumerate(zip(distances[0], indices[0])):
-            if idx == -1:
-                continue
-            resolved_id = product_ids[idx] if product_ids is not None else int(idx)
-            results.append({
-                "rank": rank + 1,
-                "product_id": resolved_id,
-                "similarity_score": float(distance)
-            })
-
-        return {
-            "meta": {"query": query, "execution_time_ms": round(inference_time_ms, 2), "results_count": len(results)},
-            "results": results
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Search Engine Exception: {str(e)}")
+    return {"status": "online", "engine": "Multimodal CLIP + FAISS [CUDA Enabled]"}
 
 
 @app.post("/search")
@@ -246,10 +218,6 @@ async def search_products(
     image_file: Optional[UploadFile] = File(None, description="Binary image file upload to search for products"),
     k: int = 5
 ):
-    """
-    Unified Multimodal Search Endpoint. Routes image requests to standard pipeline,
-    and forwards incoming concurrent text strings directly to our GPU batch processor.
-    """
     if "model" not in ml_models or "index" not in ml_models:
         raise HTTPException(status_code=503, detail="Search engine models are not fully initialized.")
         
@@ -262,16 +230,14 @@ async def search_products(
         )
     
     try:
-        # --- VISION BRANCH (Synchronous processing per image upload) ---
         if is_image_present:
             model = ml_models["model"]
             processor = ml_models["processor"]
             device = ml_models["device"]
             index = ml_models["index"]
-            product_ids = ml_models["product_ids"]
+            product_lookup = ml_models["product_lookup"]
 
             start_inference = time.time()
-            print(f"Executing Image Search Pipeline for file: {image_file.filename}")
             image_bytes = await image_file.read()
             pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
             
@@ -298,12 +264,22 @@ async def search_products(
             for rank, (distance, idx) in enumerate(zip(distances[0], indices[0])):
                 if idx == -1:
                     continue
-                resolved_id = product_ids[idx] if product_ids is not None and idx < len(product_ids) else int(idx)
-                results.append({
-                    "rank": rank + 1,
-                    "product_id": resolved_id,
-                    "similarity_score": round(float(distance), 5)
-                })
+                resolved = product_lookup.get(int(idx), {"product_id": f"prod_{idx}", "title": f"Product Index {idx}", "tags": {}})
+                if isinstance(resolved, dict):
+                    results.append({
+                        "rank": rank + 1,
+                        "product_id": resolved.get("product_id"),
+                        "title": resolved.get("title"),
+                        "category": resolved.get("category"),
+                        "tags": resolved.get("tags"),
+                        "similarity_score": round(float(distance), 5)
+                    })
+                else:
+                    results.append({
+                        "rank": rank + 1,
+                        "product_id": resolved,
+                        "similarity_score": round(float(distance), 5)
+                    })
                     
             return {
                 "meta": {
@@ -314,15 +290,10 @@ async def search_products(
                 "results": results
             }
             
-        # --- TEXT BRANCH (Forward directly to our new Asynchronous Batching System) ---
         else:
             current_loop = asyncio.get_running_loop()
             user_future = current_loop.create_future()
-            
-            # Package query attributes and drop into background processing buffer
             await text_request_queue.put({"query": text_query, "k": k, "future": user_future})
-            
-            # Wait asynchronously until the GPU worker finishes calculations for this batch slice
             response_data = await user_future
             return response_data
 

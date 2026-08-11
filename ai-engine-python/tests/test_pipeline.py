@@ -13,8 +13,8 @@ def verify_pipeline():
     print("🚀 Initializing E-Commerce Data Pipeline...")
     
     # Define paths explicitly relative to this workspace
-    csv_path = os.path.join(BASE_DIR, "data", "metadata.csv")
-    img_dir = os.path.join(BASE_DIR, "data", "mock_images")
+    csv_path = os.path.join(BASE_DIR, "data", "products_catalog.csv")
+    img_dir = os.path.join(BASE_DIR, "data", "data_images")
     
     # 1. Initialize dataset
     dataset = ECommerceDataset(
@@ -23,22 +23,19 @@ def verify_pipeline():
         transform=get_clip_transforms()
     )
     
-    print(f"✅ Dataset loaded successfully. Total items: {len(dataset)}")
+    print(f"Dataset loaded successfully. Total items: {len(dataset)}")
     
     # 2. Initialize DataLoader
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True, num_workers=0)
     
     # 3. Test a batch run
-    for batch in dataloader:
-        images = batch['image']
-        texts = batch['text']
-        
+    for images, texts in dataloader:
         print("\n--- Tensor Verification ---")
         print(f"Images tensor shape : {images.shape}")  # Expected: [batch_size, 3, 224, 224]
         print(f"Batch texts         : {texts}")
         
-        assert images.shape == (len(texts), 3, 224, 224), "❌ Image tensor shape mismatch!"
-        print("\n🎉 Success! The PyTorch pipeline is structurally sound and ready for CLIP.")
+        assert images.shape == (len(texts), 3, 224, 224), "Image tensor shape mismatch!"
+        print("\nSuccess! The PyTorch pipeline is structurally sound and ready for CLIP.")
         break
 
 if __name__ == "__main__":

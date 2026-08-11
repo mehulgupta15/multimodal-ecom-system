@@ -13,8 +13,9 @@ from src.model import CLIPEngine
 def test_embedding_pipeline():
     print("\n=== Launching Day 4 Integration Test ===")
     
-    csv_path = r"E:\multimodal-ecom-system\ai-engine-python\data\metadata.csv"
-    image_dir = r"E:\multimodal-ecom-system\ai-engine-python\data\mock_images"
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    csv_path = os.path.join(base_dir, "data", "products_catalog.csv")
+    image_dir = os.path.join(base_dir, "data", "data_images")
     
     # 2. Define the evaluation transform pipeline for CLIP
     clip_transform = transforms.Compose([
@@ -27,7 +28,7 @@ def test_embedding_pipeline():
         )
     ])
     
-    # 3. Pass the transform into your dataset (matching your parameter: transform=...)
+    # 3. Pass the transform into your dataset
     dataset = ECommerceDataset(
         csv_file=csv_path, 
         img_dir=image_dir, 
@@ -37,10 +38,7 @@ def test_embedding_pipeline():
     dataloader = DataLoader(dataset, batch_size=2, shuffle=False)
 
     # Fetch a single batch
-    # Fetch a single batch
-    batch = next(iter(dataloader))
-    images = batch['image']
-    titles = batch['text']  # ✨ Changed 'title' to 'text' to match your dataset!
+    images, titles = next(iter(dataloader))
     
     print(f"Successfully loaded batch from Day 3 pipeline.")
     print(f"↳ Raw Image Tensor Shape: {images.shape}")
