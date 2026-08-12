@@ -10,7 +10,7 @@ if BASE_DIR not in sys.path:
 from src.dataset import ECommerceDataset, get_clip_transforms
 
 def verify_pipeline():
-    print("🚀 Initializing E-Commerce Data Pipeline...")
+    print("Initializing E-Commerce Data Pipeline...")
     
     # Define paths explicitly relative to this workspace
     csv_path = os.path.join(BASE_DIR, "data", "products_catalog.csv")

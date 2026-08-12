@@ -1,127 +1,138 @@
 import os
 import json
-# pyrefly: ignore [missing-import]
+import numpy as np
 import torch
 import pandas as pd
 from PIL import Image
+from torch.utils.data import Dataset, DataLoader
 from transformers import CLIPProcessor, CLIPModel
 
-# Paths setup
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+# 1. Paths Setup
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(BASE_DIR, "src", "labels_config.json")
 CSV_PATH = os.path.join(BASE_DIR, "data", "products_catalog.csv")
 IMAGE_DIR = os.path.join(BASE_DIR, "data", "data_images")
 
-# 1. Load the Configuration Blueprint
-with open(CONFIG_PATH, "r") as f:
-    config = json.load(f)
+# 2. PyTorch Fast Image Dataset for Batching
+class TaggingDataset(Dataset):
+    def __init__(self, image_list, image_dir, processor):
+        self.image_list = image_list
+        self.image_dir = image_dir
+        self.processor = processor
 
-categories = config["categories"]
-colors = config["attributes"]["colors"]
-materials = config["attributes"]["materials"]
-styles = config["attributes"]["styles"]
+    def __len__(self):
+        return len(self.image_list)
 
-# 2. Automatically detect your RTX 4050 GPU
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"🚀 Running AI pipeline on device: {device}")
+    def __getitem__(self, idx):
+        img_name = self.image_list[idx]
+        img_path = os.path.join(self.image_dir, img_name)
+        try:
+            image = Image.open(img_path).convert("RGB")
+            inputs = self.processor(images=image, return_tensors="pt")
+            return inputs["pixel_values"].squeeze(0), img_name
+        except Exception:
+            # Return dummy zero tensor if corrupted image
+            return torch.zeros((3, 224, 224)), img_name
 
-# 3. Initialize CLIP and send weights to GPU VRAM
-print("Loading CLIP model components...")
-model_name = "openai/clip-vit-base-patch32"
-model = CLIPModel.from_pretrained(model_name).to(device)
-processor = CLIPProcessor.from_pretrained(model_name)
-
-def get_best_match(image, candidate_labels):
-    prompts = [f"a photo of a product with {label}" for label in candidate_labels]
-    
-    # Generate tensors and push them straight to the GPU
-    inputs = processor(text=prompts, images=image, return_tensors="pt", padding=True)
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-    
+def extract_label_features(model, processor, labels, device):
+    """Pre-computes text embeddings for candidate labels once on GPU."""
+    prompts = [f"a photo of a product with {label}" for label in labels]
+    inputs = processor(text=prompts, return_tensors="pt", padding=True).to(device)
     with torch.no_grad():
-        outputs = model(**inputs)
-        
-    logits_per_image = outputs.logits_per_image 
-    probs = logits_per_image.softmax(dim=-1).cpu().numpy()[0]
-    return candidate_labels[probs.argmax()]
+        text_outputs = model.text_model(**inputs)
+        features = text_outputs[1] if isinstance(text_outputs, tuple) else text_outputs.pooler_output
+        features = model.text_projection(features)
+        features = features / features.norm(p=2, dim=-1, keepdim=True)
+    return features
 
-def process_batch_tagging():
-    if not os.path.exists(IMAGE_DIR) or not os.listdir(IMAGE_DIR):
-        print(f"No images found in {IMAGE_DIR}. Run the scraper first!")
+def run_fast_gpu_batch_tagging(batch_size: int = 32):
+    print("=== Starting High-Speed GPU Batch Auto-Tagging ===")
+    
+    # Check GPU availability
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"🚀 Acceleration Context: {device.upper()}")
+
+    # Load Label Config
+    with open(CONFIG_PATH, "r") as f:
+        config = json.load(f)
+
+    # Convert to numpy arrays so batch indexing works (list[np_array] fails, np_array[np_array] works)
+    categories = np.array(config["categories"])
+    colors     = np.array(config["attributes"]["colors"])
+    materials  = np.array(config["attributes"]["materials"])
+    styles     = np.array(config["attributes"]["styles"])
+
+    # Load Model onto GPU VRAM
+    print("Loading CLIP Model into VRAM...")
+    model_name = "openai/clip-vit-base-patch32"
+    model = CLIPModel.from_pretrained(model_name).to(device)
+    processor = CLIPProcessor.from_pretrained(model_name)
+    model.eval()
+
+    # Pre-compute Label Vectors ONCE on GPU (Lightning Fast!)
+    print("Pre-computing Label Vectors on GPU...")
+    cat_feats = extract_label_features(model, processor, categories, device)
+    col_feats = extract_label_features(model, processor, colors, device)
+    mat_feats = extract_label_features(model, processor, materials, device)
+    sty_feats = extract_label_features(model, processor, styles, device)
+
+    # Read Catalog Ledger
+    if not os.path.exists(CSV_PATH):
+        print(f"[ERROR] Catalog CSV missing at {CSV_PATH}")
         return
 
-    # Load your existing structural CSV
-    if os.path.exists(CSV_PATH):
-        try:
-            df = pd.read_csv(CSV_PATH)
-        except Exception:
-            df = pd.DataFrame(columns=["product_id", "title", "image_path", "predicted_category", "color", "material", "style"])
-    else:
-        df = pd.DataFrame(columns=["product_id", "title", "image_path", "predicted_category", "color", "material", "style"])
-
-    # Ensure all baseline columns exist safely and are object dtype for string assignment
-    required_columns = ["product_id", "title", "image_path", "predicted_category", "color", "material", "style"]
-    for col in required_columns:
+    df = pd.read_csv(CSV_PATH)
+    required_cols = ["predicted_category", "color", "material", "style"]
+    for col in required_cols:
         if col not in df.columns:
             df[col] = None
         df[col] = df[col].astype("object")
 
-    images_to_process = [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-    
-    print(f"Found {len(images_to_process)} images. Starting batch processing...")
+    # Find Images to Process
+    all_images = [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    print(f"Found {len(all_images)} total image files.")
 
-    for img_name in images_to_process:
-        # Match using basename of 'image_path' column
-        matches = df[df["image_path"].apply(lambda x: os.path.basename(str(x)) == img_name if pd.notna(x) else False)]
-        is_existing = len(matches) > 0
-        
-        if is_existing and pd.notna(matches["predicted_category"].values[0]):
-            print(f"-> Skipping {img_name} (Already tagged)")
-            continue
+    # Create PyTorch DataLoader for Parallel GPU Batching
+    dataset = TaggingDataset(all_images, IMAGE_DIR, processor)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
-        img_path = os.path.join(IMAGE_DIR, img_name)
-        print(f"Processing: {img_name}")
-        
-        try:
-            image = Image.open(img_path).convert("RGB")
+    results_map = {}
+    print(f"Processing in Parallel Batches of {batch_size} on RTX 4050 GPU...")
+
+    # GPU Matrix Batching Loop
+    with torch.no_grad():
+        for batch_idx, (pixel_values, img_names) in enumerate(dataloader):
+            pixel_values = pixel_values.to(device)
             
-            # Extract tags using GPU-accelerated CLIP
-            cat = get_best_match(image, categories)
-            col = get_best_match(image, colors)
-            mat = get_best_match(image, materials)
-            sty = get_best_match(image, styles)
+            # Extract Image Features Batch (Shape: [Batch, 512])
+            vision_outputs = model.vision_model(pixel_values=pixel_values)
+            img_feats = vision_outputs[1] if isinstance(vision_outputs, tuple) else vision_outputs.pooler_output
+            img_feats = model.visual_projection(img_feats)
+            img_feats = img_feats / img_feats.norm(p=2, dim=-1, keepdim=True)
 
-            # Generate smart fallbacks for the title if it's completely blank
-            fallback_title = os.path.splitext(img_name)[0].replace("_", " ").title()
+            # Single GPU Matrix Multiplication for all 32 items simultaneously!
+            cat_preds = categories[torch.argmax(torch.matmul(img_feats, cat_feats.T), dim=-1).cpu().numpy()]
+            col_preds = colors[torch.argmax(torch.matmul(img_feats, col_feats.T), dim=-1).cpu().numpy()]
+            mat_preds = materials[torch.argmax(torch.matmul(img_feats, mat_feats.T), dim=-1).cpu().numpy()]
+            sty_preds = styles[torch.argmax(torch.matmul(img_feats, sty_feats.T), dim=-1).cpu().numpy()]
 
-            if is_existing:
-                match_idx = matches.index[0]
-                df.loc[match_idx, ["predicted_category", "color", "material", "style"]] = [cat, col, mat, sty]
-                
-                # If title is missing, fill fallback
-                if pd.isna(df.loc[match_idx, "title"]):
-                    df.loc[match_idx, "title"] = fallback_title
-            else:
-                # Build fresh row structure
-                next_id = f"prod_{len(df) + 1}"
-                new_row = pd.DataFrame([{
-                    "product_id": next_id,
-                    "title": fallback_title,
-                    "image_path": os.path.join(".", "data", "data_images", img_name),
-                    "predicted_category": cat,
-                    "color": col,
-                    "material": mat,
-                    "style": sty
-                }])
-                df = pd.concat([df, new_row], ignore_index=True)
+            for i, name in enumerate(img_names):
+                results_map[name] = (cat_preds[i], col_preds[i], mat_preds[i], sty_preds[i])
 
-        except Exception as e:
-            print(f"Error processing {img_name}: {e}")
+            if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == len(dataloader):
+                print(f"Processed {(batch_idx + 1) * batch_size} / {len(all_images)} images...")
 
-    # Save updates back directly to your drive path
-    os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
+    # Assign all predicted tags to DataFrame in ONE fast operation
+    print("\nUpdating CSV Ledger...")
+    for idx, row in df.iterrows():
+        img_name = os.path.basename(str(row["image_path"]))
+        if img_name in results_map:
+            cat, col, mat, sty = results_map[img_name]
+            df.loc[idx, ["predicted_category", "color", "material", "style"]] = [cat, col, mat, sty]
+
     df.to_csv(CSV_PATH, index=False)
-    print(f"\nSuccessfully batch tagged and saved results to {CSV_PATH}!")
+    print("\n[SUCCESS] GPU Batch Tagging Complete!")
+    print(f"Tagged {len(results_map)} products in catalog CSV!")
 
 if __name__ == "__main__":
-    process_batch_tagging()
+    run_fast_gpu_batch_tagging(batch_size=32)

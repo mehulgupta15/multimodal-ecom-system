@@ -35,7 +35,7 @@ def run_production_indexing():
     
     # 2. Critical Validation Check
     if not os.path.exists(csv_path):
-        print(f"❌ Production Error: Could not find catalog ledger at '{csv_path}'.")
+        print(f"[ERROR] Could not find catalog ledger at '{csv_path}'.")
         print("Please run 'python -m src.scraper' first to download assets!")
         return
 
@@ -43,11 +43,11 @@ def run_production_indexing():
     try:
         df_check = pd.read_csv(csv_path)
         if df_check.empty:
-            print("❌ Production Error: The catalog CSV file is completely empty.")
+            print("[ERROR] The catalog CSV file is completely empty.")
             return
         print(f"Verified spreadsheet database: Found {len(df_check)} registered items.")
     except Exception as e:
-        print(f"❌ Failed reading catalog ledger layout: {e}")
+        print(f"[ERROR] Failed reading catalog ledger layout: {e}")
         return
 
     # 3. Compute Resource Evaluation (CPU vs GPU activation)
@@ -68,7 +68,7 @@ def run_production_indexing():
     try:
         dataset = ECommerceDataset(csv_file=csv_path, img_dir=img_dir, transform=transform)
     except Exception as e:
-        print(f"❌ Pipeline Assembly Failure: Dataset instantiation crashed. Details: {e}")
+        print(f"[ERROR] Dataset instantiation crashed. Details: {e}")
         return
         
     # Batch size of 4 optimizes matrix throughput over local disk boundaries safely
@@ -86,9 +86,6 @@ def run_production_indexing():
                 # Dispatch tensor stack to target hardware device context
                 batch_images = batch_images.to(device)
                 
-                # Extract the 512-dimensional normalized vectors from raw image pixels
-                # NOTE: If your model class calls it 'get_image_features', keep this line. 
-                # If your class uses 'extract_image_features', change it below.
                 image_features = clip_engine.extract_image_features(batch_images)
                 
                 # Collect compute variables from VRAM back into host system RAM memory
@@ -99,11 +96,11 @@ def run_production_indexing():
                 
                 print(f"Processed batch {batch_idx + 1}/{len(dataloader)}")
             except Exception as e:
-                print(f"⚠️ Warning: Batch execution anomaly encountered at segment {batch_idx + 1}: {e}")
+                print(f"[WARNING] Batch execution anomaly encountered at segment {batch_idx + 1}: {e}")
                 continue
 
     if len(all_vectors) == 0:
-        print("❌ Critical Failure: Zero vectors generated during data sweep. Aborting write.")
+        print("[ERROR] Zero vectors generated during data sweep. Aborting write.")
         return
 
     # 7. Stack arrays vertically to compile the master matrix ledger
@@ -114,7 +111,7 @@ def run_production_indexing():
     
     # 8. Commit structural files permanently to the local disk layout
     search_index.save(index_output_prefix)
-    print("\n🎉 === Production Database Built & Locked! ===")
+    print("\n[SUCCESS] Production Database Built & Locked!")
     print(f"Registered Total Elements: {len(all_metadata)}")
     print(f"Target Destination Files: {index_output_prefix}.faiss / .pkl")
 

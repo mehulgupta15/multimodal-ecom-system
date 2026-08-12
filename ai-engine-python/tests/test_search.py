@@ -25,11 +25,11 @@ def run_semantic_search_test():
     try:
         search_index.load(index_prefix)
     except FileNotFoundError:
-        print(f"❌ Error: Could not find the index files at {index_prefix}.faiss")
+        print(f"[ERROR] Could not find index files at {index_prefix}.faiss")
         print("Please make sure you ran 'python -m src.index_catalog' successfully first.")
         return
 
-    print("\n🎉 Search Engine ready! Ready for queries.")
+    print("\n[SUCCESS] Search Engine ready! Ready for queries.")
     print("------------------------------------------------")
     
     # 4. Interactive Query Loop
@@ -38,7 +38,7 @@ def run_semantic_search_test():
         query_text = input("\nEnter search concept (or type 'exit' to quit): ").strip()
         
         if query_text.lower() == 'exit':
-            print("Shutting down search tester. Fantastic job today!")
+            print("Shutting down search tester.")
             break
             
         if not query_text:
@@ -57,7 +57,7 @@ def run_semantic_search_test():
         top_matches = search_index.search(query_vector, top_k=3)        
         
         # 7. Print the top matching results dynamically
-        print(f"\n✨ Top Results for '{query_text}':")
+        print(f"\nTop Results for '{query_text}':")
         print("-" * 60)
         
         # Safely loop through whatever format top_matches returns

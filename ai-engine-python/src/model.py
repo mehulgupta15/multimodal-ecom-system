@@ -16,10 +16,14 @@ class CLIPEngine(nn.Module):
         self.model.to(self.device)
         print(f"Model successfully loaded and mapped to device: {self.device.type.upper()}")
 
-    def tokenize_text(self, text_list: list) -> dict:
+    def tokenize_text(self, text_list) -> dict:
         """
         Tokenizes raw text strings into fixed-length matrices of 77 tokens.
+        Accepts either a single string or a list of strings.
         """
+        if isinstance(text_list, str):
+            text_list = [text_list]
+            
         # CLIP's native max sequence length is exactly 77 tokens
         tokens = self.tokenizer(
             text_list, 

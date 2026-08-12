@@ -41,8 +41,8 @@ def test_embedding_pipeline():
     images, titles = next(iter(dataloader))
     
     print(f"Successfully loaded batch from Day 3 pipeline.")
-    print(f"↳ Raw Image Tensor Shape: {images.shape}")
-    print(f"↳ Batch Titles: {titles}")
+    print(f" - Raw Image Tensor Shape: {images.shape}")
+    print(f" - Batch Titles: {titles}")
     
     # 4. Instantiate Day 4 model engine
     engine = CLIPEngine()
@@ -53,13 +53,13 @@ def test_embedding_pipeline():
     text_embeddings = engine.extract_text_features(titles)
     
     print("\n=== Vector Embedding Footprints ===")
-    print(f"↳ Image Embedding Shape: {image_embeddings.shape}")
-    print(f"↳ Text Embedding Shape:  {text_embeddings.shape}")
+    print(f" - Image Embedding Shape: {image_embeddings.shape}")
+    print(f" - Text Embedding Shape:  {text_embeddings.shape}")
     
     assert image_embeddings.shape == (2, 512), f"Expected shape (2, 512), got {image_embeddings.shape}"
     assert text_embeddings.shape == (2, 512), f"Expected shape (2, 512), got {text_embeddings.shape}"
     
-    print("\n✅ SUCCESS: Raw data successfully converted into shared 512-D vector space!")
+    print("\n[SUCCESS] Raw data successfully converted into shared 512-D vector space!")
 
 if __name__ == "__main__":
     test_embedding_pipeline()
